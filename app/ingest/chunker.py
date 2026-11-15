@@ -71,83 +71,88 @@ def split_text(text, chunk_size=500):
     """章見出しと直後の本文を保ち、段落のまとまりを優先して分割する。"""
 
     paragraphs = text.split("\n\n")
-
     chunks = []
     current_chunk = ""
-    chapter_needs_body = False
+    has_new_content = False
+
+    def get_overlap(chunk):
+        overlap_size = min(100, max(0, chunk_size // 5))
+        if not overlap_size:
+            return ""
+        tail = chunk[-overlap_size:]
+        boundaries = [match.end() for match in re.finditer(r"[。！？]", tail)]
+        if boundaries:
+            if len(boundaries) > 1:
+                return tail[boundaries[-2]:]
+
+            tail_start = len(chunk) - len(tail)
+            sentence_end = tail_start + boundaries[0]
+            previous_boundaries = [
+                match.end()
+                for match in re.finditer(r"[。！？]", chunk[:sentence_end - 1])
+            ]
+            sentence_start = previous_boundaries[-1] if previous_boundaries else 0
+            if tail_start and not previous_boundaries:
+                return ""
+
+            sentence = chunk[sentence_start:sentence_end]
+            return sentence if len(sentence) <= overlap_size else ""
+        return tail
+
+    def split_at_boundary(value, limit):
+        prefix = value[:limit]
+        boundaries = [match.end() for match in re.finditer(r"[。！？]", prefix)]
+        return boundaries[-1] if boundaries else limit
+
+    def add_paragraph(paragraph, separator="\n\n"):
+        nonlocal current_chunk, has_new_content
+
+        sentences = [
+            sentence
+            for sentence in re.split(r"(?<=[。！？])", paragraph)
+            if sentence
+        ] or [paragraph]
+
+        for index, sentence in enumerate(sentences):
+            pending = (separator if index == 0 and current_chunk else "") + sentence
+
+            while pending:
+                available = chunk_size - len(current_chunk)
+                if len(pending) <= available:
+                    current_chunk += pending
+                    has_new_content = True
+                    break
+
+                if current_chunk and has_new_content:
+                    chunks.append(current_chunk)
+                    current_chunk = get_overlap(current_chunk)
+                    has_new_content = False
+                    continue
+
+                split_index = split_at_boundary(pending, available)
+                current_chunk += pending[:split_index]
+                pending = pending[split_index:]
+                has_new_content = True
+                if pending:
+                    chunks.append(current_chunk)
+                    current_chunk = get_overlap(current_chunk)
+                    has_new_content = False
 
     for paragraph in paragraphs:
         if not paragraph.strip():
             continue
 
         if re.match(r"^第\d+章", paragraph):
-            if current_chunk:
+            if current_chunk and has_new_content:
                 chunks.append(current_chunk)
-            current_chunk = paragraph
-            chapter_needs_body = True
+            current_chunk = ""
+            has_new_content = False
+            add_paragraph(paragraph, separator="")
             continue
 
-        if chapter_needs_body:
-            candidate = current_chunk + "\n\n" + paragraph
+        add_paragraph(paragraph)
 
-            if len(candidate) <= chunk_size:
-                current_chunk = candidate
-            else:
-                sentences = [
-                    sentence
-                    for sentence in re.split(r"(?<=[。！？])", paragraph)
-                    if sentence
-                ]
-                if not sentences:
-                    sentences = [paragraph]
-
-                current_chunk += "\n\n" + sentences[0]
-
-                for sentence in sentences[1:]:
-                    if len(current_chunk) + len(sentence) <= chunk_size:
-                        current_chunk += sentence
-                    else:
-                        chunks.append(current_chunk)
-                        current_chunk = sentence
-
-            chapter_needs_body = False
-            continue
-
-        if (
-            re.match(r"^図表-\s*\d+\s+(?!は|が|を|に|で|の|へ|と|も|や)\S", paragraph)
-            and current_chunk
-        ):
-            current_chunk += "\n\n" + paragraph
-            continue
-
-        # 既存チャンクに段落を追加できるか確認
-        candidate = current_chunk + "\n\n" + paragraph if current_chunk else paragraph
-
-        if len(candidate) <= chunk_size:
-            current_chunk = candidate
-        else:
-            if current_chunk:
-                chunks.append(current_chunk)
-
-            # 長い段落は文章単位で分割する
-            if len(paragraph) > chunk_size:
-                sentences = re.split(r"(?<=[。！？])", paragraph)
-                current_chunk = ""
-
-                for sentence in sentences:
-                    if not sentence:
-                        continue
-
-                    if len(current_chunk) + len(sentence) <= chunk_size:
-                        current_chunk += sentence
-                    else:
-                        if current_chunk:
-                            chunks.append(current_chunk)
-                        current_chunk = sentence
-            else:
-                current_chunk = paragraph
-
-    if current_chunk:
+    if current_chunk and has_new_content:
         chunks.append(current_chunk)
 
     return chunks

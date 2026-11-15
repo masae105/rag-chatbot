@@ -1,2 +1,3 @@
 psycopg[binary]
 pgvector
+streamlit>=1.32

@@ -2,7 +2,7 @@ from app.retrieval.search_chunks import search_chunks
 
 
 def main():
-    question = "従業員100人以下の中小企業では、DX推進にどのような課題がありますか？"
+    question = "中小企業がDXに取り組むことで、どのような成果が期待できますか？"
     results = search_chunks(question, limit=10)
 
     if not results:

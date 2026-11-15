@@ -3,7 +3,7 @@ from app.retrieval.search_chunks import search_chunks
 
 
 def main():
-    question = "従業員100人以下の中小企業では、DXに取り組む予定がない企業はどのくらいありますか？"
+    question = "この資料から、従業員100人以下の企業におけるDXの成果について分かることは何ですか？"
     chunks = search_chunks(question, limit=5)
 
     if not chunks:
