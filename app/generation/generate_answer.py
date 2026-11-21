@@ -34,32 +34,9 @@ FACTS_RESPONSE_SCHEMA = {
 ANSWER_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
-        "claims": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string"},
-                    "citations": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "reference": {"type": "string"},
-                                "quote": {"type": "string"},
-                            },
-                            "required": ["reference", "quote"],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                "required": ["text", "citations"],
-                "additionalProperties": False,
-            },
-        }
+        "text": {"type": "string"},
     },
-    "required": ["claims"],
+    "required": ["text"],
     "additionalProperties": False,
 }
 NUMBER_TOKEN_PATTERN = re.compile(
@@ -468,6 +445,43 @@ def _is_three_category_scope_quote(text):
     )
 
 
+def _is_only_figure_or_analysis_intro(quote):
+    """図表の案内・分析目的だけで、実質的な結果を述べていないquoteか判定する。"""
+    cleaned = _clean_quote_for_baseline(quote)
+    if not cleaned or _is_three_category_scope_quote(cleaned):
+        return False
+
+    has_result = re.search(
+        r"差.{0,8}(?:小|大)|上回|下回|関係は|傾向|増加|減少|"
+        r"(?:割合|回答).{0,8}(?:高い|低い|多い|少ない)|顕著|大きな差|小さな差",
+        cleaned,
+    )
+    is_figure_intro = bool(
+        re.search(r"^(?:図表|グラフ|表)", cleaned)
+        and re.search(
+            r"(?:見たものである|示したものである|まとめたものである)[。．]?$",
+            cleaned,
+        )
+    ) or bool(
+        re.search(r"(?:図表|グラフ|表)", cleaned)
+        and re.search(
+            r"(?:を.{0,12}(?:示す|示した|掲載する|掲載した|まとめる|まとめた|"
+            r"掲げる|掲げた|表す|表した)|"
+            r"(?:に|では).{0,12}(?:示す|示した|掲載する|掲載した|まとめる|まとめた|"
+            r"掲げる|掲げた|表す|表した))",
+            cleaned,
+        )
+    )
+    is_analysis_purpose = bool(
+        re.search(
+            r"(?:分析|検討|把握)するため|(?:分析|検討|把握)を行った|"
+            r"(?:分析|検討|把握)することを目的",
+            cleaned,
+        )
+    )
+    return (is_figure_intro or is_analysis_purpose) and not has_result
+
+
 def _is_scale_dx_initiative_trend_quote(text):
     """Q01のように従業員規模とDX取組割合の変化傾向を直接述べるquoteか判定する。"""
     normalized = _clean_quote_for_baseline(text)
@@ -517,7 +531,6 @@ def _group_complementary_facts(usable_facts, question=""):
                 groups.append([scope_item, item])
                 used_indices.add(scope_idx)
                 used_indices.add(idx)
-        used_indices.add(scope_idx)
 
     normalized_q = _clean_quote_for_baseline(question) if isinstance(question, str) else ""
     if "従業員規模が小さくなると" in normalized_q or "どのように変化しますか" in normalized_q:
@@ -531,10 +544,17 @@ def _group_complementary_facts(usable_facts, question=""):
             groups.append([valid_facts[idx] for idx in trend_indices])
             used_indices.update(trend_indices)
 
+    has_substantive_fact = any(
+        not _is_only_figure_or_analysis_intro(item["quote"]) for item in valid_facts
+    )
     for idx, item in enumerate(valid_facts):
         if idx in used_indices:
             continue
-        if scope_facts and idx == valid_facts.index(scope_facts[0]) and len(valid_facts) > 1:
+        if (
+            has_substantive_fact
+            and len(valid_facts) > 1
+            and _is_only_figure_or_analysis_intro(item["quote"])
+        ):
             continue
         groups.append([item])
         used_indices.add(idx)
@@ -550,6 +570,8 @@ def _build_skeleton_claim(fact_group):
     cleaned_sentences = []
     references = []
     quotes = []
+    topics = []
+    facts = []
     combined_sets = []
     combined_modality = []
     combined_negation_degree = []
@@ -566,6 +588,12 @@ def _build_skeleton_claim(fact_group):
         cleaned = _clean_quote_for_baseline(quote)
         if not cleaned:
             continue
+        topic = item.get("topic")
+        fact = item.get("fact")
+        if isinstance(topic, str) and topic.strip() and topic.strip() not in topics:
+            topics.append(topic.strip())
+        if isinstance(fact, str) and fact.strip() and fact.strip() not in facts:
+            facts.append(fact.strip())
         if cleaned not in cleaned_sentences:
             cleaned_sentences.append(cleaned)
         quotes.append(quote.strip())
@@ -595,6 +623,8 @@ def _build_skeleton_claim(fact_group):
         "formatted_claim": _format_claim(baseline_text, references),
         "references": references,
         "quotes": quotes,
+        "topics": topics,
+        "facts": facts,
         "markers": {
             "condition_number_sets": combined_sets,
             "is_ambiguous": is_ambiguous,
@@ -650,6 +680,23 @@ def _is_meta_refusal_text(text):
     if not cleaned or cleaned == NO_SOURCE_ANSWER:
         return True
     return any(phrase in cleaned for phrase in META_REFUSAL_PHRASES)
+
+
+def _is_question_and_evidence_composite_term(term, question, evidence):
+    """質問の修飾語と根拠中の語を組み合わせた用語か判定する。"""
+    normalized_term = _normalize_for_evidence_match(term)
+    normalized_question = _normalize_for_evidence_match(question)
+    normalized_evidence = _normalize_for_evidence_match(evidence)
+    for split_at in range(2, len(normalized_term) - 1):
+        if (
+            normalized_term[:split_at] in normalized_question
+            and normalized_term[split_at:] in normalized_evidence
+        ) or (
+            normalized_term[:split_at] in normalized_evidence
+            and normalized_term[split_at:] in normalized_question
+        ):
+            return True
+    return False
 
 
 def _subjects_match(req_subj, llm_subj, other_subject_cores=()):
@@ -762,7 +809,10 @@ def _is_verified_llm_claim(text, valid_quotes, question, skeleton_claim):
             return False
 
     norm_text = _normalize_for_evidence_match(cleaned_text)
+    if _has_unsupported_numbers(text, "\n".join(valid_quotes)):
+        return False
     req_sets = markers.get("condition_number_sets", [])
+    condition_sets_verified = not req_sets
     if req_sets:
         llm_markers = _extract_fact_markers(text)
         if llm_markers.get("is_ambiguous"):
@@ -772,6 +822,24 @@ def _is_verified_llm_claim(text, valid_quotes, question, skeleton_claim):
             return False
         if not _are_condition_number_sets_verified(req_sets, llm_sets):
             return False
+        condition_sets_verified = True
+
+    evidence_context = "\n".join(
+        [cleaned_quotes]
+        + skeleton_claim.get("topics", [])
+        + skeleton_claim.get("facts", [])
+    )
+    normalized_evidence_context = _normalize_for_evidence_match(evidence_context)
+    for term in _extract_content_terms(cleaned_text):
+        if term in normalized_evidence_context:
+            continue
+        if term == "比較" and condition_sets_verified and req_sets:
+            continue
+        if _is_question_and_evidence_composite_term(
+            term, cleaned_question, evidence_context
+        ):
+            continue
+        return False
 
     for mod in markers.get("modality", []):
         variants = MODALITY_VARIANTS.get(mod, (mod,))
@@ -788,6 +856,27 @@ def _is_verified_llm_claim(text, valid_quotes, question, skeleton_claim):
         if not any(_normalize_for_evidence_match(v) in norm_text for v in variants):
             return False
 
+    comparison_conclusions = (
+        (
+            "全体平均を上回",
+            ("全体平均を上回", "企業全体平均を上回", "全体平均より高", "企業全体平均より高"),
+        ),
+        (
+            "全体の平均を上回",
+            ("全体の平均を上回", "全体平均を上回", "平均より高"),
+        ),
+        ("平均を上回", ("平均を上回", "平均より高")),
+        ("全体平均を下回", ("全体平均を下回", "企業全体平均を下回", "全体平均より低", "企業全体平均より低")),
+        (
+            "全体の平均を下回",
+            ("全体の平均を下回", "全体平均を下回", "平均より低"),
+        ),
+        ("平均を下回", ("平均を下回", "平均より低")),
+    )
+    for marker, variants in comparison_conclusions:
+        if marker in cleaned_quotes and not any(variant in cleaned_text for variant in variants):
+            return False
+
     if any(adv in cleaned_quotes for adv in ("ものの、", "に対し、")) and not any(
         adv in cleaned_text for adv in ("ものの", "に対し", "が、", "一方")
     ):
@@ -796,25 +885,207 @@ def _is_verified_llm_claim(text, valid_quotes, question, skeleton_claim):
     return True
 
 
+def _extract_content_terms(text):
+    """テキストから照合用の内容語（漢字2文字以上・カタカナ2文字以上・英数字2文字以上）を抽出する。"""
+    if not isinstance(text, str) or not text.strip():
+        return []
+    cleaned = re.sub(r"\[?資料\d+\]?", " ", text)
+    terms = re.findall(r"[一-龥]{2,}|[ァ-ヴー]{2,}|[A-Za-z0-9]{2,}", cleaned)
+    stopwords = {"資料", "企業", "場合", "割合", "状況", "結果", "関係", "違い", "について", "それぞれ"}
+    seen = []
+    for t in terms:
+        nt = _normalize_for_evidence_match(t)
+        if nt and t not in stopwords and nt not in seen:
+            seen.append(nt)
+    return seen
+
+
+def _candidate_sentences_from_chunk(chunk_text):
+    """チャンク原文から、図表・節見出しを除いた完全文（および逆接後半の独立節）の候補リストを返す。"""
+    if not isinstance(chunk_text, str) or not chunk_text.strip():
+        return []
+    candidates = []
+    for line in chunk_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        for sent in re.split(r"(?<=[。！？!?])", line):
+            sent = sent.strip()
+            if not sent or _is_heading_only_quote(sent):
+                continue
+            if not (sent.endswith("。") or PREDICATE_ENDING_PATTERN.search(sent)):
+                continue
+            if sent not in candidates:
+                candidates.append(sent)
+            if "が、" in sent:
+                _, tail = sent.split("が、", 1)
+                tail = tail.strip()
+                if tail and len(tail) >= 15 and tail not in candidates:
+                    candidates.append(tail)
+    return candidates
+
+
+def _resolve_verbatim_quote(
+    reference, topic, quote, fact, source_by_reference, question=""
+):
+    """Stage1の出力から、検証条件を満たす場合のみチャンク内の正確な原文文（(ref, quote)）を特定する。"""
+    raw_refs = re.findall(r"資料\d+", f"{reference or ''} {quote or ''}")
+    ref_candidates = []
+    for r in raw_refs:
+        if r in source_by_reference and r not in ref_candidates:
+            ref_candidates.append(r)
+    if not ref_candidates:
+        return reference, ""
+
+    cleaned_quote = _clean_quote_for_baseline(quote) if isinstance(quote, str) else ""
+    norm_quote = _normalize_for_evidence_match(cleaned_quote)
+    norm_quote_loose = re.sub(r"(?<=」)[、，](?=「)", "", norm_quote)
+    has_fact = isinstance(fact, str) and bool(fact.strip())
+    cleaned_fact = _clean_quote_for_baseline(fact) if has_fact else ""
+    fact_neg_markers = [
+        m for m in NEGATION_DEGREE_MARKERS if m in cleaned_fact
+    ]
+
+    question_terms = _extract_content_terms(question)
+    topic_terms = _extract_content_terms(topic)
+    fact_terms = _extract_content_terms(fact)
+    quote_terms = _extract_content_terms(cleaned_quote)
+
+    # 段階A: LLMのquote内にチャンクの原文候補文が正確に含まれている場合（連続する複数文も保持）
+    if norm_quote_loose:
+        for ref in ref_candidates:
+            chunk_text = source_by_reference[ref].get("content", "")
+            full_sents = [
+                cand
+                for cand in _candidate_sentences_from_chunk(chunk_text)
+                if _normalize_for_evidence_match(cand) in norm_quote_loose
+                or re.sub(r"(?<=」)[、，](?=「)", "", _normalize_for_evidence_match(cand))
+                in norm_quote_loose
+            ]
+            filtered_sents = []
+            for s in full_sents:
+                ns = _normalize_for_evidence_match(s)
+                if any(
+                    ns != _normalize_for_evidence_match(other)
+                    and ns in _normalize_for_evidence_match(other)
+                    for other in full_sents
+                ):
+                    continue
+                qh = sum(1 for t in question_terms if t in ns)
+                th = sum(1 for t in topic_terms if t in ns)
+                fh = sum(1 for t in fact_terms if t in ns)
+                if qh < 1 and (th + fh) < 2:
+                    continue
+                if (qh + th + fh) < 2:
+                    continue
+                markers = _extract_fact_markers(s)
+                has_substance = bool(
+                    markers["condition_number_sets"]
+                    or markers["negation_or_degree"]
+                    or markers["modality"]
+                    or markers["causality"]
+                    or _is_scale_dx_initiative_trend_quote(s)
+                    or (fact_terms and (fh / len(fact_terms)) >= 0.7)
+                )
+                if not has_substance:
+                    continue
+                filtered_sents.append(s)
+
+            if filtered_sents:
+                combined = "".join(filtered_sents)
+                if _is_valid_citation(ref, combined, source_by_reference):
+                    if not (has_fact and _has_unsupported_numbers(fact, combined)):
+                        norm_comb = _normalize_for_evidence_match(combined)
+                        neg_ok = not any(
+                            not any(
+                                _normalize_for_evidence_match(v) in norm_comb
+                                for v in NEGATION_DEGREE_VARIANTS.get(neg, (neg,))
+                            )
+                            for neg in fact_neg_markers
+                        )
+                        if neg_ok:
+                            return ref, combined
+
+    # 段階B: LLMがquoteを要約・省略した場合、fact_terms（70%以上かつ2語以上）でチャンク内の単一原文文を特定
+    best_match = None
+    best_score = None
+
+    for ref in ref_candidates:
+        chunk_text = source_by_reference[ref].get("content", "")
+        for cand in _candidate_sentences_from_chunk(chunk_text):
+            if not _is_valid_citation(ref, cand, source_by_reference):
+                continue
+
+            # 1. factに数値がある場合、その数値がすべて候補文に存在することを必須とする
+            if has_fact and _has_unsupported_numbers(fact, cand):
+                continue
+
+            norm_cand = _normalize_for_evidence_match(cand)
+
+            # 1b. factに否定・程度・結論表現がある場合、候補文にも同義表現が存在することを必須とする
+            if any(
+                not any(
+                    _normalize_for_evidence_match(v) in norm_cand
+                    for v in NEGATION_DEGREE_VARIANTS.get(neg, (neg,))
+                )
+                for neg in fact_neg_markers
+            ):
+                continue
+
+            # 2. topicとfactの主要な内容語が候補文で裏付けられることを確認する
+            topic_hits = sum(1 for t in topic_terms if t in norm_cand)
+            fact_hits = sum(1 for t in fact_terms if t in norm_cand)
+            quote_hits = sum(1 for t in quote_terms if t in norm_cand)
+
+            # factがある場合はfactの主要語が70%以上、かつ2語以上（1語のみなら1語）一致すること
+            if fact_terms:
+                min_fact_hits = 1 if len(fact_terms) == 1 else 2
+                if fact_hits < min_fact_hits or (fact_hits / len(fact_terms)) < 0.7:
+                    continue
+            # topicとfact/quoteの合計でも裏付けが不十分な場合は不採用
+            if (topic_hits + fact_hits) < 2 and (topic_hits + quote_hits) < 2:
+                continue
+
+            # 3. 必須条件を満たした候補の中で一致スコアを算出する（同点時は短い候補を優先）
+            score = (fact_hits, topic_hits, -len(norm_cand))
+
+            if best_score is None or score > best_score:
+                best_score = score
+                best_match = (ref, cand)
+
+    if best_match is not None:
+        return best_match
+    return reference, ""
+
+
 def _extract_verified_facts(question, context_parts, source_by_reference):
     """第1段階：質問に関係する事実と引用を抽出し、Python側で検証して返す。"""
     prompt = (
-        "質問に答えるために必要な事実と原文の引用を、提示された資料本文から抽出してください。\n"
-        "質問に複数の観点が含まれる場合は、以下の観点を別々の要素として漏れなく抽出してください。\n"
-        "1. 対象範囲・分類条件（従業員100人以下、DX取組なし・DX成果なし・DX成果ありの3区分などの説明文）\n"
-        "2. 具体的な数値・割合（組織連携の実施割合が2割前後・3割5分・6割前後など）\n"
-        "3. 定性的な結論（推進体制とDX成果の関係は顕著ではないという結論など）\n"
+        "【質問】に答えるために必要な事実と原文の引用を、提示された【資料本文】から抽出してください。\n"
+        "質問文と各資料の内容を照らし合わせ、質問に直接関係する以下の観点を必要に応じて別々の要素として漏れなく抽出してください。\n"
+        "1. 対象範囲・分類条件・比較の前提（調査対象の規模や比較区分の説明文など）\n"
+        "2. 具体的な数値・割合・比較結果（質問で問われている項目の数値・割合・倍率や比較対象との差など）\n"
+        "3. 定性的な結論・傾向（差が大きい・差は小さい・関係は顕著ではない・平均を上回るなどの結論や傾向）\n"
+        "質問に複数の観点や比較項目が含まれる場合は、質問を観点ごとに分解し、それぞれについて独立したFactを抽出してください。一つの観点を抽出できても、ほかの観点の抽出を省略してはいけません。\n"
+        "資料本文全体を確認し、関連情報が複数のチャンクに分かれている場合は、それぞれのチャンクから必要なFactを抽出してください。\n"
+        "各Factのtopic、quote、factは必ず同じ観点の内容にしてください。異なる観点の情報や数値を一つのFactに混在させないでください。\n"
+        "数値や割合をfactに記載する場合は、その数値が実際に記載されている原文をquoteとして選択してください。数値の根拠が書かれていないチャンクを引用元にせず、比較条件や対象範囲が別のチャンクにある場合は必要に応じて別々のFactとして抽出してください。\n"
+        "「関係は顕著ではなかった」「実施割合が高かった」「明確な差が見られなかった」など、数値がなくても質問に関係する定性的な結論や傾向を抽出してください。\n"
+        "quoteには、資料本文に存在する意味の完結した文を文頭から文末まで一字一句そのまま引用してください。文の途中から引用を開始したり、文の途中で終了したりしないでください。\n"
+        "複数の文が必要な場合は、質問に必要な各文をそれぞれ原文どおりに含めてください。\n"
+        "quoteに含まれる数値、割合、単位、記号、表記は原文のまま維持してください。例えば、原文の「2割」を「20%」に変換してはいけません。factでも原文に記載された数値や単位の表現を維持し、独自の数値変換を行わないでください。\n"
+        "質問に答えるために必要な結論、条件、比較対象、数値などがquoteに含まれるようにしてください。長い文章から引用する場合も必要な情報を省略せず、質問と関係のない説明まで無理に引用する必要はありません。\n"
         "図表タイトルや節見出しだけを根拠（quote）として抽出しないでください。\n"
-        "数値を問われた場合は具体的な数値が書かれている本文を、定性的な結論を問われた場合はその結論が書かれている本文をquoteとして抽出してください。\n"
-        "各要素では、まず観点（topic）を指定し、次に根拠となる本文（quote）を資料本文から一字一句そのまま抜き出し、そのquoteが含まれる資料番号（reference）を必ず「資料1」「資料2」のように角括弧なしで指定し、最後にquoteに基づく事実（fact）を記述してください。\n"
+        "数値を問われた場合は具体的な数値が書かれている本文を、定性的な違いや特徴・結論を問われた場合はその内容が書かれている本文をquoteとして抽出してください。\n"
+        "各要素では、まず質問に応じた観点（topic）を指定し、次に根拠となる本文（quote）を資料本文から文頭から文末まで一字一句そのまま抜き出し、そのquoteが含まれる資料番号（reference）を必ず「資料1」のように角括弧なしで指定し、最後にquoteに基づく事実（fact）を記述してください。\n"
         "quoteに書かれていない数値や別の観点の数値をfactに含めてはいけません。\n"
         "JSON出力例：\n"
         "{\n"
         '  "facts": [\n'
         "    {\n"
-        '      "topic": "組織連携の実施割合",\n'
+        '      "topic": "質問の観点",\n'
         '      "quote": "資料本文からの原文引用",\n'
-        '      "reference": "資料2",\n'
+        '      "reference": "該当する資料番号",\n'
         '      "fact": "原文に基づく事実"\n'
         "    }\n"
         "  ]\n"
@@ -837,25 +1108,67 @@ def _extract_verified_facts(question, context_parts, source_by_reference):
         logger.warning("第1段階の応答にfacts配列がないため採用しません。")
         return []
 
+    logger.info("LLMが返した生のFact件数: %d", len(facts))
     verified_facts = []
-    for item in facts:
+    for index, item in enumerate(facts, start=1):
         if not isinstance(item, dict):
+            logger.info(
+                "生Fact %dをスキップ: 要素が辞書ではありません (value=%r)",
+                index,
+                item,
+            )
             continue
+        logger.info(
+            "生Fact %d: topic=%r, reference=%r, quote=%r, fact=%r",
+            index,
+            item.get("topic"),
+            item.get("reference"),
+            item.get("quote"),
+            item.get("fact"),
+        )
+        logger.info("生Fact %d: 要素形式の検証を通過", index)
         topic = item.get("topic")
         reference = item.get("reference")
         quote = item.get("quote")
         fact = item.get("fact")
         if not isinstance(topic, str) or not topic.strip():
+            logger.info("生Fact %dをスキップ: topicが空、または文字列ではありません", index)
             continue
+        logger.info("生Fact %d: topicの検証を通過", index)
+        reference, quote = _resolve_verbatim_quote(
+            reference, topic, quote, fact, source_by_reference, question
+        )
+        logger.info(
+            "生Fact %d: 引用補正後 reference=%r, quote=%r",
+            index,
+            reference,
+            quote,
+        )
         if not _is_valid_citation(reference, quote, source_by_reference):
+            logger.info(
+                "生Fact %dをスキップ: referenceまたはquoteが資料本文の引用として無効です",
+                index,
+            )
             continue
+        logger.info("生Fact %d: reference/quoteの検証を通過", index)
 
         verified_fact = None
         if isinstance(fact, str) and fact.strip():
             if _has_unsupported_numbers(fact, quote):
-                logger.info("引用に存在しない数値を含むfactを破棄します: %s", reference)
+                logger.info(
+                    "生Fact %d: factに引用にない数値があるためfact=Noneとし、Factレコードは保持します",
+                    index,
+                )
             else:
                 verified_fact = fact.strip()
+                logger.info("生Fact %d: factの数値チェックを通過", index)
+        elif isinstance(fact, str):
+            logger.info("生Fact %d: factが空のためfact=Noneとして保持します", index)
+        else:
+            logger.info(
+                "生Fact %d: factが文字列ではないためfact=Noneとして保持します",
+                index,
+            )
 
         verified_facts.append(
             {
@@ -865,7 +1178,9 @@ def _extract_verified_facts(question, context_parts, source_by_reference):
                 "fact": verified_fact,
             }
         )
+        logger.info("生Fact %d: 検証済みFactとして追加 (fact=%r)", index, verified_fact)
 
+    logger.info("検証後のFact件数: %d", len(verified_facts))
     return verified_facts
 
 
@@ -879,23 +1194,6 @@ def _format_claim(text, references):
     if punctuation:
         return f"{text[:-1].rstrip()}{citations}{punctuation.group(1)}"
     return f"{text}{citations}"
-
-
-def _is_verified_in_stage1(reference, quote, verified_facts):
-    """第2段階の引用が第1段階で検証済みの(reference, quote)と対応しているか確認する。"""
-    if not isinstance(reference, str) or not isinstance(quote, str) or not quote.strip():
-        return False
-    normalized_quote = _normalize_for_evidence_match(quote)
-    if not normalized_quote:
-        return False
-    for item in verified_facts:
-        if not isinstance(item, dict) or item.get("reference") != reference:
-            continue
-        stage1_quote = _normalize_for_evidence_match(item.get("quote", ""))
-        if stage1_quote and normalized_quote in stage1_quote:
-            return True
-    logger.info("第1段階で検証されていない引用を除外します: %s", reference)
-    return False
 
 
 def _build_fallback_from_chunks(source_by_reference):
@@ -924,7 +1222,7 @@ def _build_fallback_from_chunks(source_by_reference):
 
 
 def _generate_answer_from_facts(question, verified_facts, source_by_reference):
-    """第2段階：検証済みの事実と引用から最終回答と出典を生成する。"""
+    """第2段階：検証済みFactを回答文に整え、出典はPython側で付与する。"""
     usable_facts = [
         item
         for item in verified_facts
@@ -937,142 +1235,61 @@ def _generate_answer_from_facts(question, verified_facts, source_by_reference):
         return _build_fallback_from_chunks(source_by_reference)
 
     fact_groups = _group_complementary_facts(usable_facts, question)
-    skeleton_by_ref = {}
+    skeletons = []
     for group in fact_groups:
         skel = _build_skeleton_claim(group)
-        if not skel:
-            continue
-        for ref in skel["references"]:
-            skeleton_by_ref[ref] = skel
-
-    evidence_parts = []
-    for index, item in enumerate(usable_facts, start=1):
-        lines = [
-            f"[根拠{index}]",
-            f"観点(topic): {item['topic']}",
-            f"資料番号(reference): {item['reference']}",
-            f"原文引用(quote): {item['quote']}",
-            f"事実の要約(fact): {item['fact']}",
-        ]
-        evidence_parts.append("\n".join(lines))
-
-    prompt = (
-        "【質問】に対する具体的な回答を、提示された【検証済み根拠】の原文引用（quote）に基づいて日本語で作成してください。\n"
-        "以下のルールを厳守してください。\n"
-        "1. 質問文の反復・根拠外情報の混入禁止：claimのtextに【質問】の文面をそのままコピーしたり、疑問文（「〜ですか？」など）を出力したりしないでください。また、そのclaimのcitationsに含まれない数値や語句（質問文中にしかない数値など）をtextに付け加えないでください。\n"
-        "2. 情報の整理と定性的結論・ニュアンスの維持：事実の要約（fact）が短い見出し形式であっても、原文引用（quote）から質問に必要な情報を整理して具体的な回答文をtextに作成してください。具体的な数値が記載されていない項目についても、推測や別項目の数値の流用をせず、原文引用に書かれている定性的な結論（差は小さい、関係は顕著ではない、寄与したと推察されるなど）や主語・比較条件・因果関係・推量表現のニュアンスを省略・変更せずに回答してください。\n"
-        "3. 比較条件と数値の正確な対応付け：比較や違い・特徴を尋ねられた場合、原文引用（quote）に質問への回答に関係する数値・割合・倍率が記載されている項目は、「違いがあります」だけで終わらせず、質問への回答に関係する各分類条件・比較対象（DX取組なし・DX成果なし・DX成果あり、活用の有無、従業員規模など）と数値を省略せず正確に対応させてtextに明記してください。そのclaim自身のcitationsのquoteに存在しない数値をtextに含めてはいけません。\n"
-        "4. 異なる観点の分離と関連根拠の組み合わせ：異なる観点（topic、例：組織連携と推進体制）はclaimを分け、一方の数値や結論を他方に流用しないでください。一方、同一の観点について対象範囲（従業員100人以下など）・分類条件と具体的な数値が別々の根拠に分かれており条件が一致している場合は、それらを組み合わせて回答し、textに含まれるすべての対象範囲・数値・結論を裏付ける複数の根拠（referenceとquote）をそのclaimのcitationsに漏れなく指定してください。citationsの各quoteは【検証済み根拠】の原文引用を一字一句変えずに指定してください。\n"
-        "5. 根拠不足時の対応：【検証済み根拠】だけでは質問に対する具体的な回答を作成できない場合（根拠が不足している場合）は、無理に回答を作らずclaimsを空配列 [] にしてください。\n"
-        "JSON出力例：\n"
-        "{\n"
-        '  "claims": [\n'
-        "    {\n"
-        '      "text": "原文引用に基づき質問に必要な情報を整理した回答文",\n'
-        '      "citations": [\n'
-        "        {\n"
-        '          "reference": "資料1",\n'
-        '          "quote": "検証済み根拠の原文引用をそのまま記載"\n'
-        "        }\n"
-        "      ]\n"
-        "    }\n"
-        "  ]\n"
-        "}\n\n"
-        "【検証済み根拠】\n"
-        + "\n\n".join(evidence_parts)
-        + f"\n\n【質問】\n{question.strip()}"
-    )
-
-    raw_response = _call_ollama(prompt, ANSWER_RESPONSE_SCHEMA)
-    try:
-        response = json.loads(raw_response)
-    except json.JSONDecodeError:
-        logger.warning("第2段階の応答がJSONではないため採用しません。")
-        return _build_fallback_from_chunks(source_by_reference)
-
-    claims = response.get("claims") if isinstance(response, dict) else None
-    if not isinstance(claims, list):
-        logger.warning("第2段階の応答にclaims配列がないため採用しません。")
-        return _build_fallback_from_chunks(source_by_reference)
+        if skel:
+            skeletons.append((skel, group))
 
     answer_claims = []
     used_references = []
-    failed_stage1_verified_refs = []
-    for claim in claims:
-        if not isinstance(claim, dict):
-            continue
-        text = claim.get("text")
-        citations = claim.get("citations")
-        if not isinstance(text, str) or not text.strip() or not isinstance(citations, list):
-            continue
-        if _is_meta_refusal_text(text):
-            continue
-
-        valid_references = []
-        valid_quotes = []
-        for citation in citations:
-            if not isinstance(citation, dict):
-                continue
-            reference = citation.get("reference")
-            quote = citation.get("quote")
-            if not _is_valid_citation(reference, quote, source_by_reference):
-                continue
-            if not _is_verified_in_stage1(reference, quote, usable_facts):
-                continue
-            valid_quotes.append(quote)
-            if reference not in valid_references:
-                valid_references.append(reference)
-
-        if not valid_references:
-            continue
-        for ref in valid_references:
-            if ref not in failed_stage1_verified_refs:
-                failed_stage1_verified_refs.append(ref)
-
-        if _has_unsupported_numbers(text, "\n".join(valid_quotes)):
-            logger.info("引用に存在しない数値を含むclaimを除外します")
-            continue
-
-        matched_skeleton = None
-        for ref in valid_references:
-            if ref in skeleton_by_ref:
-                matched_skeleton = skeleton_by_ref[ref]
-                break
-        if not matched_skeleton:
-            continue
-
-        has_all_group_refs = set(matched_skeleton["references"]).issubset(
-            set(valid_references)
+    for skel, group in skeletons:
+        evidence_parts = [
+            f"原文引用: {item['quote']}\n事実: {item['fact']}" for item in group
+        ]
+        prompt = (
+            "【質問】に対する回答文を、提示された1つの検証済みFactグループだけに基づいて"
+            "自然な日本語で1つ作成してください。\n"
+            "引用や出典情報は出力せず、JSONのtextだけを返してください。"
+            "根拠にない情報・数値を追加せず、対象と数値の対応、否定・程度・推量・因果・"
+            "逆接を含む重要な意味や結論を省略・変更しないでください。\n"
+            '出力形式: {"text": "回答文"}\n\n'
+            "【検証済みFactグループ】\n"
+            + "\n\n".join(evidence_parts)
+            + f"\n\n【質問】\n{question.strip()}"
         )
-        if has_all_group_refs and _is_verified_llm_claim(
-            text, valid_quotes, question, matched_skeleton
-        ):
-            formatted_claim = _format_claim(text, valid_references)
-            claim_references = valid_references
+
+        formatted_claim = skel["formatted_claim"]
+        try:
+            raw_response = _call_ollama(prompt, ANSWER_RESPONSE_SCHEMA)
+        except RuntimeError:
+            logger.warning("第2段階の応答を取得できないためPython基準回答を採用します。")
         else:
-            logger.info("LLM整形文が品質基準を満たさないためPython基準回答を採用します")
-            formatted_claim = matched_skeleton["formatted_claim"]
-            claim_references = matched_skeleton["references"]
+            try:
+                response = json.loads(raw_response)
+            except json.JSONDecodeError:
+                logger.warning("第2段階の応答がJSONではないためPython基準回答を採用します。")
+            else:
+                text = response.get("text") if isinstance(response, dict) else None
+                if isinstance(text, str) and _is_verified_llm_claim(
+                    text, skel["quotes"], question, skel
+                ):
+                    formatted_claim = _format_claim(text, skel["references"])
+                else:
+                    logger.info(
+                        "LLM整形文が品質基準を満たさないためPython基準回答を採用します"
+                    )
 
         if not formatted_claim:
             continue
         if formatted_claim not in answer_claims:
             answer_claims.append(formatted_claim)
-        for reference in claim_references:
+        for reference in skel["references"]:
             if reference not in used_references:
                 used_references.append(reference)
 
-    if not answer_claims and failed_stage1_verified_refs:
-        for ref in failed_stage1_verified_refs:
-            skel = skeleton_by_ref.get(ref)
-            if skel and skel["formatted_claim"] not in answer_claims:
-                answer_claims.append(skel["formatted_claim"])
-                for r in skel["references"]:
-                    if r not in used_references:
-                        used_references.append(r)
-
     if not answer_claims:
-        return _build_fallback_from_chunks(source_by_reference)
+        return {"answer": NO_SOURCE_ANSWER, "sources": []}
 
     sources = [
         {
@@ -1116,9 +1333,32 @@ def generate_answer(question, chunks):
         return {"answer": NO_SOURCE_ANSWER, "sources": []}
 
     try:
+        logger.info("Stage1に渡すcontext_parts件数: %d", len(context_parts))
+        for index, (context_part, source) in enumerate(
+            zip(context_parts, source_by_reference.values()), start=1
+        ):
+            logger.info(
+                "Stage1 context_part %d: document_id=%s, page_number=%s, "
+                "chunk_number=%s, content=%s",
+                index,
+                source.get("document_id"),
+                source.get("page_number"),
+                source.get("chunk_number"),
+                context_part,
+            )
         verified_facts = _extract_verified_facts(
             question, context_parts, source_by_reference
         )
+        logger.info("Stage1で検証されたFact件数: %d", len(verified_facts))
+        for index, item in enumerate(verified_facts, start=1):
+            logger.info(
+                "Stage1検証済みFact %d: topic=%s, reference=%s, fact=%s, quote=%s",
+                index,
+                item.get("topic"),
+                item.get("reference"),
+                item.get("fact"),
+                item.get("quote"),
+            )
         if not verified_facts:
             return _build_fallback_from_chunks(source_by_reference)
         return _generate_answer_from_facts(
