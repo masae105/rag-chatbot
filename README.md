@@ -31,38 +31,38 @@ Python、Streamlit、Ollama、PostgreSQL、pgvectorを使用して開発して�
 
 ### 使用技術
 
-| 分類           | 技術                   | 用途                |
-| ------------ | -------------------- | ----------------- |
-| 言語           | Python               | アプリケーション・検索・生成処理  |
-| UI           | Streamlit            | チャット画面            |
-| LLM実行環境      | Ollama               | ローカルLLMの実行        |
-| LLM          | qwen2.5:3b-instruct  | 事実抽出・回答生成         |
-| Embeddingモデル | qwen3-embedding:0.6b | テキストのベクトル化        |
-| データベース       | PostgreSQL 17        | チャンク・Embeddingの保存 |
-| ベクトル検索       | pgvector             | ベクトル類似検索          |
-| DB接続         | psycopg              | PostgreSQLとの接続    |
-| PDF処理        | pypdf                | PDFからのテキスト抽出      |
-| コンテナ         | Docker Compose       | PostgreSQL環境の構築   |
+| 分類 | 技術 | 用途 |
+|---|---|---|
+| 言語 | Python | アプリケーション・検索・生成処理 |
+| UI | Streamlit | チャット画面 |
+| LLM実行環境 | Ollama | ローカルLLMの実行 |
+| LLM | qwen2.5:3b-instruct | 事実抽出・回答生成 |
+| Embeddingモデル | qwen3-embedding:0.6b | テキストのベクトル化 |
+| データベース | PostgreSQL 17 | チャンク・Embeddingの保存 |
+| ベクトル検索 | pgvector | ベクトル類似検索 |
+| DB接続 | psycopg | PostgreSQLとの接続 |
+| PDF処理 | pypdf | PDFからのテキスト抽出 |
+| コンテナ | Docker Compose | PostgreSQL環境の構築 |
 
 ### RAGの処理フロー
 
 #### ① 文書取り込み
 
-1. PDFからページ単位でテキストを抽出
-2. ヘッダーやページ番号などを整理
-3. 文章や段落のまとまりを考慮してチャンクに分割
-4. OllamaでEmbeddingを生成
-5. PostgreSQL + pgvectorに保存
+- PDFからページ単位でテキストを抽出
+- ヘッダーやページ番号などを整理
+- 文章や段落のまとまりを考慮してチャンクに分割
+- OllamaでEmbeddingを生成
+- PostgreSQL + pgvectorに保存
 
 #### ② 質問・回答生成
 
-1. Streamlitで利用者が質問を入力
-2. 質問文をEmbeddingに変換
-3. pgvectorで質問に関連するチャンクを検索
-4. 検索結果から回答に利用する事実を抽出
-5. Python側で引用文や数値、条件などを検証
-6. 検証済みの情報をもとにLLMが回答文を生成
-7. 回答と出典情報をStreamlitに表示
+- Streamlitで利用者が質問を入力
+- 質問文をEmbeddingに変換
+- pgvectorで質問に関連するチャンクを検索
+- 検索結果から回答に利用する事実を抽出
+- Python側で引用文や数値、条件などを検証
+- 検証済みの情報をもとにLLMが回答文を生成
+- 回答と出典情報をStreamlitに表示
 
 ### 検索方式
 
@@ -97,13 +97,13 @@ pgvectorのコサイン距離演算子 `<=>` を使用しています。
 
 現在の実装では、次の方針でチャンクを生成しています。
 
-| 項目        | 内容                |
-| --------- | ----------------- |
-| 基本チャンクサイズ | 約500文字            |
-| オーバーラップ   | 最大100文字           |
-| 分割単位      | 段落・文章の区切りを考慮      |
-| 章見出し      | 本文との関係を考慮して分割     |
-| メタデータ     | 文書ID・ページ番号・チャンク番号 |
+| 項目 | 内容 |
+|---|---|
+| 基本チャンクサイズ | 約500文字 |
+| オーバーラップ | 最大100文字 |
+| 分割単位 | 段落・文章の区切りを考慮 |
+| 章見出し | 本文との関係を考慮して分割 |
+| メタデータ | 文書ID・ページ番号・チャンク番号 |
 
 単純な文字数による分割だけでなく、文章のまとまりをできるだけ保持することを意識しています。
 
@@ -113,15 +113,15 @@ PostgreSQLにpgvector拡張を導入し、`document_chunks` テーブルでチ�
 
 主なカラムは次のとおりです。
 
-| カラム          | 内容          |
-| ------------ | ----------- |
-| id           | 主キー         |
-| document_id  | 文書ID        |
-| page_number  | PDFのページ番号   |
-| chunk_number | チャンク番号      |
-| content      | チャンク本文      |
-| embedding    | 1024次元のベクトル |
-| created_at   | 登録日時        |
+| カラム | 内容 |
+|---|---|
+| id | 主キー |
+| document_id | 文書ID |
+| page_number | PDFのページ番号 |
+| chunk_number | チャンク番号 |
+| content | チャンク本文 |
+| embedding | 1024次元のベクトル |
+| created_at | 登録日時 |
 
 テーブル定義は `docs/create_tables.sql` に記載しています。
 
@@ -143,7 +143,6 @@ rag-chatbot/
 │   ├── create_tables.sql
 │   ├── phase3_evaluation.md
 │   └── requirements.md
-├── tests/
 ├── streamlit_app.py
 ├── compose.yaml
 ├── requirements.txt
@@ -232,6 +231,9 @@ ollama pull qwen2.5:3b-instruct
 ollama pull qwen3-embedding:0.6b
 ```
 
+- qwen2.5:3b-instruct：事実抽出・回答生成
+- qwen3-embedding:0.6b：テキストのベクトル化（1024次元）
+
 ### ⑨ PDFの配置とデータ登録
 
 対象PDFを `data` フォルダに配置します。
@@ -245,11 +247,31 @@ data/
 
 PDFのテキスト抽出、チャンク分割、Embedding生成・DB登録を順に実行します。
 
+**1. PDFからテキストを抽出**
+
 ```powershell
 python -m app.ingest.pdf_reader
+```
+
+PDFのテキストを抽出し、確認用の `data/extracted_text.txt` を生成します。
+
+**2. チャンク分割**
+
+```powershell
 python -m app.ingest.chunker
+```
+
+PDFを読み込み、テキストの正規化とチャンク分割を行い、`data/chunks.json` を生成します。
+
+**3. Embedding生成・DB登録**
+
+```powershell
 python -m app.ingest.embed_chunks
 ```
+
+チャンクのEmbeddingを生成し、PostgreSQLに登録します。
+
+※ `pdf_reader.py` と `chunker.py` は、それぞれPDFを読み込んで処理します。`chunker.py` は `extracted_text.txt` ではなく、元のPDFからチャンクを生成します。
 
 ### ⑩ Streamlitの起動
 
