@@ -1,3 +1,4 @@
 psycopg[binary]
 pgvector
 streamlit>=1.32
+pypdf
